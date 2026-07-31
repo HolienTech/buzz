@@ -492,6 +492,11 @@ pub fn apply_persona_snapshot(record: &mut ManagedAgentRecord, persona: &AgentDe
         .env_vars
         .retain(|k, v| persona.env_vars.get(k) != Some(v));
     record.persona_source_version = Some(snapshot.source_version);
+
+    // After all persona fields (including runtime) have been applied, normalize
+    // the instance parallelism to the harness cap for the newly resolved command.
+    let policy_command = crate::managed_agents::policy_command_for_record(record);
+    crate::managed_agents::normalize_instance_parallelism(record, &policy_command);
 }
 
 /// Preview what `record` would look like immediately after the start/restore

@@ -13,8 +13,8 @@ use crate::managed_agents::{
 mod presets;
 mod runtime_metadata;
 
+pub(crate) use presets::{command_for_runtime_id, preset_harness_definitions, preset_harness_ids};
 use presets::{preset_catalog_entry, PRESET_HARNESSES};
-pub(crate) use presets::{preset_harness_definitions, preset_harness_ids};
 pub(crate) use runtime_metadata::KnownAcpRuntime;
 
 const GOOSE_AVATAR_URL: &str = "https://goose-docs.ai/img/logo_dark.png";
@@ -229,7 +229,7 @@ fn executable_basename(command: &str) -> String {
     }
 }
 
-fn normalize_command_identity(command: &str) -> String {
+pub(crate) fn normalize_command_identity(command: &str) -> String {
     let normalized = command.trim().replace('\\', "/");
     let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
     let lower = basename

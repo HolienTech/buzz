@@ -170,6 +170,25 @@ fn reconcile_inbound_persona_event_blocking(
                 managed_agent_content_from_event(&event)?,
             );
             save_managed_agents(&app, &agents)?;
+            // Re-retain the locally normalized projection so the relay head
+            // converges to the capped value. retain_agent_record is a content-diff
+            // engine — if the accepted event already carried the capped value (or
+            // the agent is not OpenClaw), this is a no-op (echo-loop guard).
+            if let Some(normalized) = agents.iter().find(|r| r.pubkey == d_tag) {
+                if let Ok(scope) =
+                    crate::managed_agents::retention::active_retention_scope(&app, &state)
+                {
+                    if let Ok(conn) =
+                        crate::managed_agents::retention::open_retention_db(&scope.db_path)
+                    {
+                        let _ = crate::managed_agents::reconcile::retain_agent_record(
+                            &conn,
+                            &scope.owner_keys,
+                            normalized,
+                        );
+                    }
+                }
+            }
         }
         _ => unreachable!("kind gated above"),
     }
@@ -401,6 +420,12 @@ fn apply_inbound_managed_agent(
         local.parallelism = inbound.parallelism;
         local.respond_to = inbound.respond_to;
         local.respond_to_allowlist = inbound.respond_to_allowlist;
+
+        // Apply the per-harness parallelism cap using the locally effective
+        // command. kind:30177 carries no machine-local harness fields, so the
+        // local record's runtime/command is the authoritative identity here.
+        let policy_command = crate::managed_agents::policy_command_for_record(local);
+        crate::managed_agents::normalize_instance_parallelism(local, &policy_command);
     }
 }
 

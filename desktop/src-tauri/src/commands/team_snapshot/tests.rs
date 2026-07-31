@@ -761,3 +761,64 @@ mod egress_guard_boundary {
         assert!(err.contains("key-backup material"), "{err}");
     }
 }
+
+// ── Team snapshot import: OpenClaw parallelism contract ──────────────────────
+
+#[test]
+fn team_import_openclaw_definition_stores_requested_parallelism() {
+    // `definition_from_snapshot` stores the portable requested parallelism from
+    // the snapshot (via behavior.parallelism) WITHOUT clamping — the instance
+    // construction (which happens later) applies the device-local cap.
+    let mut m = member("OpenClaw Agent");
+    m.definition.runtime = Some("openclaw".to_string());
+    m.definition.respond_to = Some("owner-only".to_string());
+    m.definition.parallelism = Some(10); // requested value above the OpenClaw cap
+
+    let def = definition_from_snapshot(&m, false, "2026-01-01T00:00:00Z")
+        .expect("definition_from_snapshot must succeed");
+
+    assert_eq!(
+        def.parallelism,
+        Some(10),
+        "team import: AgentDefinition.parallelism must preserve the requested 10 (not clamped to 5)"
+    );
+}
+
+#[test]
+fn team_import_openclaw_instance_parallelism_is_capped() {
+    // The team import path caps the instance at the device-effective value:
+    //   effective_parallelism(command_for_runtime_id("openclaw"), 10) == 5
+    // This test drives that math via the same call sequence used in
+    // confirm_team_snapshot_import (team_snapshot.rs:575-584).
+    use crate::managed_agents::{
+        command_for_runtime_id, default_agent_command, effective_parallelism,
+    };
+
+    let instance_command = command_for_runtime_id("openclaw").unwrap_or_else(default_agent_command);
+    let requested = 10u32;
+    let instance_parallelism = effective_parallelism(&instance_command, requested);
+
+    assert_eq!(
+        instance_parallelism,
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM,
+        "team import: OpenClaw instance must be capped at {}, not the requested 10",
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+    );
+}
+
+#[test]
+fn team_import_non_openclaw_instance_parallelism_is_not_capped() {
+    // Non-OpenClaw harnesses must be byte-identical under the cap logic.
+    use crate::managed_agents::{
+        command_for_runtime_id, default_agent_command, effective_parallelism,
+    };
+
+    let instance_command = command_for_runtime_id("goose").unwrap_or_else(default_agent_command);
+    let requested = 10u32;
+    let instance_parallelism = effective_parallelism(&instance_command, requested);
+
+    assert_eq!(
+        instance_parallelism, 10,
+        "goose team import: parallelism 10 must not be capped"
+    );
+}

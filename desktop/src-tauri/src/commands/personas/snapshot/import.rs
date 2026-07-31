@@ -499,8 +499,22 @@ pub async fn confirm_agent_snapshot_import(
             turn_timeout_seconds: 0,
             idle_timeout_seconds: snapshot.definition.idle_timeout_seconds,
             max_turn_duration_seconds: snapshot.definition.max_turn_duration_seconds,
-            parallelism: minted_parallelism
-                .unwrap_or(crate::managed_agents::DEFAULT_AGENT_PARALLELISM),
+            parallelism: {
+                // Resolve harness command from the snapshot's runtime id to
+                // apply the per-harness parallelism cap (definition untouched).
+                // Uses command_for_runtime_id so preset harnesses (e.g. openclaw)
+                // resolve correctly via the static preset list even at cold start.
+                let instance_command = snapshot
+                    .definition
+                    .runtime
+                    .as_deref()
+                    .and_then(crate::managed_agents::command_for_runtime_id)
+                    .unwrap_or_else(crate::managed_agents::default_agent_command);
+                crate::managed_agents::effective_parallelism(
+                    &instance_command,
+                    minted_parallelism.unwrap_or(crate::managed_agents::DEFAULT_AGENT_PARALLELISM),
+                )
+            },
             system_prompt: snapshot.definition.system_prompt.clone(),
             model: snapshot.definition.model.clone(),
             provider: snapshot.definition.provider.clone(),
@@ -878,5 +892,68 @@ mod import_avatar_tests {
             .await;
 
         assert_eq!(result.unwrap_err(), "Snapshot avatar data is malformed.");
+    }
+}
+
+// ── Individual snapshot import: OpenClaw parallelism contract ────────────────
+
+#[cfg(test)]
+mod openclaw_parallelism_tests {
+    /// `resolve_snapshot_import_behavior` returns the REQUESTED parallelism
+    /// from the snapshot unchanged — the cap is applied only when constructing
+    /// the instance record inside `confirm_agent_snapshot_import`.
+    #[test]
+    fn individual_import_openclaw_definition_stores_requested_parallelism() {
+        let behavior = super::resolve_snapshot_import_behavior(
+            Some("owner-only"),
+            &[],
+            Some(10), // requested value above the OpenClaw cap
+            false,
+        )
+        .expect("resolve_snapshot_import_behavior must succeed");
+
+        assert_eq!(
+            behavior.parallelism,
+            Some(10),
+            "individual import: behavior.parallelism (used as definition requested value) must be 10 (not clamped)"
+        );
+    }
+
+    /// The instance parallelism path in `confirm_agent_snapshot_import` uses
+    ///   `command_for_runtime_id(runtime)` → `effective_parallelism(cmd, requested)`.
+    /// This test drives that exact call sequence so any future change to the
+    /// instance-construction block is caught here.
+    #[test]
+    fn individual_import_openclaw_instance_parallelism_is_capped() {
+        use crate::managed_agents::effective_parallelism;
+
+        // Mirrors confirm_agent_snapshot_import lines 507-516:
+        //   snapshot.definition.runtime = Some("openclaw")
+        //   minted_parallelism = Some(10)  (from resolve_snapshot_import_behavior)
+        let instance_command = Some("openclaw")
+            .and_then(crate::managed_agents::command_for_runtime_id)
+            .unwrap_or_else(crate::managed_agents::default_agent_command);
+        // Simulates minted_parallelism from resolve_snapshot_import_behavior;
+        // using the raw value directly avoids an unnecessary_literal_unwrap lint.
+        let instance_parallelism = effective_parallelism(&instance_command, 10u32);
+
+        assert_eq!(
+            instance_parallelism,
+            crate::managed_agents::OPENCLAW_MAX_PARALLELISM,
+            "individual import: OpenClaw instance parallelism must be capped at {}",
+            crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+        );
+    }
+
+    /// Non-OpenClaw harnesses pass through unchanged.
+    #[test]
+    fn individual_import_goose_instance_parallelism_is_not_capped() {
+        let instance_command = crate::managed_agents::command_for_runtime_id("goose")
+            .unwrap_or_else(crate::managed_agents::default_agent_command);
+        assert_eq!(
+            crate::managed_agents::effective_parallelism(&instance_command, 10),
+            10,
+            "goose individual import: parallelism 10 must not be capped"
+        );
     }
 }

@@ -937,3 +937,57 @@ mod flush_barrier {
         );
     }
 }
+
+// ── apply_persona_snapshot parallelism normalization ──────────────────────────
+
+#[test]
+fn apply_persona_snapshot_normalizes_openclaw_parallelism() {
+    let mut record = sample_record();
+    record.parallelism = 10;
+    let persona = AgentDefinition {
+        runtime: Some("openclaw".into()),
+        ..sample_persona()
+    };
+    apply_persona_snapshot(&mut record, &persona);
+    assert_eq!(
+        record.parallelism,
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+    );
+}
+
+#[test]
+fn apply_persona_snapshot_leaves_non_openclaw_parallelism_unchanged() {
+    let mut record = sample_record();
+    record.parallelism = 10;
+    let persona = AgentDefinition {
+        runtime: Some("goose".into()),
+        ..sample_persona()
+    };
+    apply_persona_snapshot(&mut record, &persona);
+    assert_eq!(record.parallelism, 10);
+}
+
+#[test]
+fn apply_persona_snapshot_clamps_on_runtime_switch_to_openclaw() {
+    let mut record = sample_record();
+    record.parallelism = 8;
+    apply_persona_snapshot(
+        &mut record,
+        &AgentDefinition {
+            runtime: Some("goose".into()),
+            ..sample_persona()
+        },
+    );
+    assert_eq!(record.parallelism, 8, "goose must not cap");
+    apply_persona_snapshot(
+        &mut record,
+        &AgentDefinition {
+            runtime: Some("openclaw".into()),
+            ..sample_persona()
+        },
+    );
+    assert_eq!(
+        record.parallelism,
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+    );
+}

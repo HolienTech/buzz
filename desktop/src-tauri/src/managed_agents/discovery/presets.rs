@@ -199,6 +199,33 @@ pub(crate) fn preset_harness_ids() -> &'static [&'static str] {
         .as_slice()
 }
 
+/// Return the primary command for a preset harness by id, or `None` if the id
+/// is not a known preset.
+///
+/// Returns a `&'static str` so callers can use it without allocation.
+pub(super) fn preset_command_for_id(id: &str) -> Option<&'static str> {
+    PRESET_HARNESSES
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| p.command)
+}
+
+/// Return the primary harness command for a given runtime id, or `None`.
+///
+/// Checks static builtins, then the static preset list (always available,
+/// no registry warm-up required — covers openclaw, devin, cursor, etc.),
+/// then the loaded preset/custom registry.
+pub(crate) fn command_for_runtime_id(id: &str) -> Option<String> {
+    super::known_acp_runtime_exact(id)
+        .and_then(|r| r.commands.first().copied())
+        .map(str::to_string)
+        .or_else(|| preset_command_for_id(id).map(str::to_string))
+        .or_else(|| {
+            crate::managed_agents::custom_harnesses::lookup_loaded_harness_by_id(id)
+                .map(|d| d.command.clone())
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;

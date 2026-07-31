@@ -313,7 +313,11 @@ fn inbound_managed_agent_drops_injected_secrets_and_harness() {
     }
     // Instance-level projected fields ARE updated from the inbound event.
     assert_eq!(a.name, "Remote Agent");
-    assert_eq!(a.parallelism, 99);
+    assert_eq!(
+        a.parallelism, 99,
+        "non-OpenClaw inbound parallelism 99 is preserved unchanged (Option 2 contract: \
+         cap applies only to OpenClaw)"
+    );
     assert_eq!(a.respond_to, crate::managed_agents::RespondTo::Anyone);
     assert_eq!(a.respond_to_allowlist, vec!["deadbeef".to_string()]);
     // Definition-linked inbound (persona_id present): the definition quad is
@@ -672,4 +676,201 @@ fn inbound_gate_accepts_validly_signed_event() {
         .unwrap();
     let parsed = parse_verified_inbound_event(&event.as_json()).unwrap();
     assert_eq!(parsed.pubkey, keys.public_key());
+}
+
+// ── Parallelism cap on inbound path ───────────────────────────────────────────
+
+/// An OpenClaw-backed local agent receiving an inbound event with
+/// parallelism 10 (above the cap): the stored value must be clamped to 5.
+#[test]
+fn inbound_openclaw_over_cap_parallelism_is_clamped() {
+    use crate::managed_agents::agent_events::managed_agent_content_from_event;
+    use nostr::{EventBuilder, JsonUtil, Keys, Kind, Tag};
+
+    let agent_pubkey = "feedbeef00000000000000000000000000000000000000000000000000000001";
+    let content = serde_json::json!({
+        "name": "OpenClaw Agent",
+        "parallelism": 10,
+        "respond_to": "owner-only",
+    });
+    let keys = Keys::generate();
+    let event = EventBuilder::new(Kind::Custom(30177), content.to_string())
+        .tags(vec![Tag::parse(["d", agent_pubkey]).unwrap()])
+        .sign_with_keys(&keys)
+        .unwrap();
+    let event = nostr::Event::from_json(event.as_json()).unwrap();
+
+    let inbound = managed_agent_content_from_event(&event).unwrap();
+    let mut agent = local_agent();
+    agent.pubkey = agent_pubkey.to_string();
+    agent.name = "OpenClaw Agent".to_string();
+    agent.runtime = Some("openclaw".to_string());
+    agent.agent_command = "openclaw".to_string();
+    agent.agent_command_override = None; // no override — policy follows runtime (openclaw)
+    agent.parallelism = 3; // local value doesn't matter — inbound overwrites then caps
+    let mut agents = vec![agent];
+    apply_inbound_managed_agent(&mut agents, agent_pubkey, inbound);
+
+    assert_eq!(
+        agents[0].parallelism,
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM,
+        "inbound over-cap parallelism must be clamped to {} for OpenClaw",
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+    );
+}
+
+/// An OpenClaw-backed local agent receiving an inbound event with
+/// parallelism 3 (below the cap): honored exactly.
+#[test]
+fn inbound_openclaw_below_cap_parallelism_is_honored() {
+    use crate::managed_agents::agent_events::managed_agent_content_from_event;
+    use nostr::{EventBuilder, JsonUtil, Keys, Kind, Tag};
+
+    let agent_pubkey = "feedbeef00000000000000000000000000000000000000000000000000000002";
+    let content = serde_json::json!({
+        "name": "OpenClaw Agent Low",
+        "parallelism": 3,
+        "respond_to": "owner-only",
+    });
+    let keys = Keys::generate();
+    let event = EventBuilder::new(Kind::Custom(30177), content.to_string())
+        .tags(vec![Tag::parse(["d", agent_pubkey]).unwrap()])
+        .sign_with_keys(&keys)
+        .unwrap();
+    let event = nostr::Event::from_json(event.as_json()).unwrap();
+
+    let inbound = managed_agent_content_from_event(&event).unwrap();
+    let mut agent = local_agent();
+    agent.pubkey = agent_pubkey.to_string();
+    agent.name = "OpenClaw Agent Low".to_string();
+    agent.runtime = Some("openclaw".to_string());
+    agent.agent_command = "openclaw".to_string();
+    agent.parallelism = 5;
+    let mut agents = vec![agent];
+    apply_inbound_managed_agent(&mut agents, agent_pubkey, inbound);
+
+    assert_eq!(
+        agents[0].parallelism, 3,
+        "inbound OpenClaw parallelism 3 (below cap) must be honored"
+    );
+}
+
+/// Re-receiving the same inbound event for an OpenClaw agent is idempotent.
+///
+/// The re-retain (relay convergence) path publishes the capped value so the
+/// relay head converges to 5. Re-receiving that normalized event must not
+/// re-trigger a further normalization change.
+#[test]
+fn inbound_openclaw_idempotent_re_receive() {
+    use crate::managed_agents::agent_events::managed_agent_content_from_event;
+    use nostr::{EventBuilder, JsonUtil, Keys, Kind, Tag};
+
+    let agent_pubkey = "feedbeef00000000000000000000000000000000000000000000000000000003";
+    // Simulate the already-normalized relay head: parallelism = 5 (the cap).
+    let content = serde_json::json!({
+        "name": "OpenClaw Agent Idempotent",
+        "parallelism": 5,
+        "respond_to": "owner-only",
+    });
+    let keys = Keys::generate();
+    let event = EventBuilder::new(Kind::Custom(30177), content.to_string())
+        .tags(vec![Tag::parse(["d", agent_pubkey]).unwrap()])
+        .sign_with_keys(&keys)
+        .unwrap();
+    let event = nostr::Event::from_json(event.as_json()).unwrap();
+
+    let mut agent = local_agent();
+    agent.pubkey = agent_pubkey.to_string();
+    agent.runtime = Some("openclaw".to_string());
+    agent.agent_command = "openclaw".to_string();
+    agent.parallelism = 5;
+
+    // First receive.
+    let inbound1 = managed_agent_content_from_event(&event).unwrap();
+    let mut agents = vec![agent.clone()];
+    apply_inbound_managed_agent(&mut agents, agent_pubkey, inbound1);
+    assert_eq!(agents[0].parallelism, 5, "first receive must keep 5");
+
+    // Second receive (idempotent).
+    let inbound2 = managed_agent_content_from_event(&event).unwrap();
+    apply_inbound_managed_agent(&mut agents, agent_pubkey, inbound2);
+    assert_eq!(
+        agents[0].parallelism, 5,
+        "re-receiving the normalized OpenClaw event must be idempotent (5 stays 5)"
+    );
+}
+
+/// An OpenClaw-backed agent with an override pointing at goose receives an
+/// inbound event with parallelism 10: the policy command is the OVERRIDE (goose),
+/// so the cap does NOT apply and 10 is honored.
+#[test]
+fn inbound_openclaw_runtime_with_goose_override_is_not_capped() {
+    use crate::managed_agents::agent_events::managed_agent_content_from_event;
+    use nostr::{EventBuilder, JsonUtil, Keys, Kind, Tag};
+
+    let agent_pubkey = "feedbeef00000000000000000000000000000000000000000000000000000004";
+    let content = serde_json::json!({
+        "name": "Override Agent",
+        "parallelism": 10,
+        "respond_to": "owner-only",
+    });
+    let keys = Keys::generate();
+    let event = EventBuilder::new(Kind::Custom(30177), content.to_string())
+        .tags(vec![Tag::parse(["d", agent_pubkey]).unwrap()])
+        .sign_with_keys(&keys)
+        .unwrap();
+    let event = nostr::Event::from_json(event.as_json()).unwrap();
+
+    let inbound = managed_agent_content_from_event(&event).unwrap();
+    let mut agent = local_agent();
+    agent.pubkey = agent_pubkey.to_string();
+    agent.runtime = Some("openclaw".to_string()); // stored harness id
+    agent.agent_command_override = Some("goose".to_string()); // override wins for policy
+    agent.parallelism = 5;
+    let mut agents = vec![agent];
+    apply_inbound_managed_agent(&mut agents, agent_pubkey, inbound);
+
+    assert_eq!(
+        agents[0].parallelism, 10,
+        "goose override on openclaw runtime: inbound parallelism 10 must NOT be capped"
+    );
+}
+
+/// A goose-runtime agent with an override pointing at openclaw receives an
+/// inbound event with parallelism 10: the policy command is the OVERRIDE (openclaw),
+/// so the cap applies and 10 → 5.
+#[test]
+fn inbound_goose_runtime_with_openclaw_override_is_capped() {
+    use crate::managed_agents::agent_events::managed_agent_content_from_event;
+    use nostr::{EventBuilder, JsonUtil, Keys, Kind, Tag};
+
+    let agent_pubkey = "feedbeef00000000000000000000000000000000000000000000000000000005";
+    let content = serde_json::json!({
+        "name": "Reverse Override Agent",
+        "parallelism": 10,
+        "respond_to": "owner-only",
+    });
+    let keys = Keys::generate();
+    let event = EventBuilder::new(Kind::Custom(30177), content.to_string())
+        .tags(vec![Tag::parse(["d", agent_pubkey]).unwrap()])
+        .sign_with_keys(&keys)
+        .unwrap();
+    let event = nostr::Event::from_json(event.as_json()).unwrap();
+
+    let inbound = managed_agent_content_from_event(&event).unwrap();
+    let mut agent = local_agent();
+    agent.pubkey = agent_pubkey.to_string();
+    agent.runtime = Some("goose".to_string()); // stored harness id (goose)
+    agent.agent_command = "goose".to_string();
+    agent.agent_command_override = Some("openclaw".to_string()); // override is openclaw
+    agent.parallelism = 3;
+    let mut agents = vec![agent];
+    apply_inbound_managed_agent(&mut agents, agent_pubkey, inbound);
+
+    assert_eq!(
+        agents[0].parallelism,
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM,
+        "openclaw override on goose runtime: inbound parallelism 10 must be capped to {}",
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+    );
 }

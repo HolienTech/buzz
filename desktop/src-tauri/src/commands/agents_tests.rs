@@ -445,3 +445,276 @@ fn deploy_payload_carries_the_full_behavioral_quad() {
     assert_eq!(payload["provider"], "openai");
     assert_eq!(payload["relay_url"], "wss://relay.example");
 }
+
+/// An OpenClaw-backed record: the provider deploy payload must carry the capped
+/// parallelism (5), not the over-cap value (10).
+#[test]
+fn deploy_payload_openclaw_parallelism_is_capped() {
+    let record: ManagedAgentRecord = serde_json::from_str(
+        r#"{
+            "pubkey": "abcd1234",
+            "name": "openclaw-agent",
+            "private_key_nsec": "nsec1fake",
+            "relay_url": "wss://localhost:3000",
+            "acp_command": "buzz-acp",
+            "agent_command": "openclaw",
+            "agent_args": [],
+            "mcp_command": "",
+            "turn_timeout_seconds": 320,
+            "system_prompt": null,
+            "parallelism": 10,
+            "respond_to": "owner-only",
+            "respond_to_allowlist": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "last_started_at": null,
+            "last_stopped_at": null,
+            "last_exit_code": null,
+            "last_error": null
+        }"#,
+    )
+    .expect("openclaw sample record");
+
+    let payload = deploy_payload_json(
+        &record,
+        "wss://relay.example".to_string(),
+        None,
+        None,
+        None,
+        std::collections::BTreeMap::new(),
+    );
+
+    assert_eq!(
+        payload["parallelism"],
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM,
+        "deploy payload for OpenClaw must carry the capped value ({}), not the stored 10",
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+    );
+}
+
+/// Payload-identity regression: the deploy payload keys the cap from
+/// `record.agent_command` (the serialized field), not the live descriptor.
+/// When the linked persona's command differs from the pinned record command,
+/// the payload follows the pinned `record.agent_command`.
+#[test]
+fn deploy_payload_uses_pinned_record_command_not_persona_command() {
+    // record.agent_command = "openclaw" (pinned at create time for OpenClaw)
+    // but the record also has a runtime = "goose" (hypothetical drift scenario).
+    // The deploy payload's parallelism must follow record.agent_command ("openclaw"),
+    // which is OpenClaw → cap applies.
+    let record: ManagedAgentRecord = serde_json::from_str(
+        r#"{
+            "pubkey": "abcd5678",
+            "name": "pinned-openclaw-agent",
+            "private_key_nsec": "nsec1fake",
+            "relay_url": "wss://localhost:3000",
+            "acp_command": "buzz-acp",
+            "agent_command": "openclaw",
+            "agent_args": [],
+            "mcp_command": "",
+            "turn_timeout_seconds": 320,
+            "system_prompt": null,
+            "parallelism": 8,
+            "respond_to": "owner-only",
+            "respond_to_allowlist": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "last_started_at": null,
+            "last_stopped_at": null,
+            "last_exit_code": null,
+            "last_error": null
+        }"#,
+    )
+    .expect("pinned openclaw record");
+
+    let payload = deploy_payload_json(
+        &record,
+        "wss://relay.example".to_string(),
+        None,
+        None,
+        None,
+        std::collections::BTreeMap::new(),
+    );
+
+    assert_eq!(
+        payload["agent_command"], "openclaw",
+        "payload must serialize the pinned record.agent_command, not any persona command"
+    );
+    assert_eq!(
+        payload["parallelism"],
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM,
+        "payload must cap based on the pinned agent_command (openclaw), got {}",
+        payload["parallelism"]
+    );
+}
+
+// ── Create-mint: per-harness parallelism cap at the create boundary ───────────
+
+/// OpenClaw create with default parallelism (no explicit input, no persona):
+/// the mint must apply DEFAULT_AGENT_PARALLELISM (10) and cap it at 5.
+#[test]
+fn create_mint_openclaw_default_parallelism_is_capped() {
+    let minted = crate::managed_agents::resolve_mint_behavioral_defaults(
+        None,
+        vec![],
+        None, // no explicit parallelism → DEFAULT_AGENT_PARALLELISM (10) at create time
+        None, // no definition
+    )
+    .expect("resolve_mint_behavioral_defaults must succeed");
+    // minted.parallelism == None → create uses DEFAULT_AGENT_PARALLELISM, then caps.
+    let value = minted.parallelism.unwrap_or(DEFAULT_AGENT_PARALLELISM);
+    let effective = effective_parallelism("openclaw", value);
+    assert_eq!(
+        effective,
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM,
+        "create mint with default parallelism on OpenClaw must cap at {}",
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+    );
+}
+
+/// OpenClaw create with explicit parallelism below the cap: must be honored.
+#[test]
+fn create_mint_openclaw_explicit_below_cap_is_honored() {
+    let minted =
+        crate::managed_agents::resolve_mint_behavioral_defaults(None, vec![], Some(3), None)
+            .expect("resolve_mint_behavioral_defaults must succeed");
+    let value = minted.parallelism.unwrap_or(DEFAULT_AGENT_PARALLELISM);
+    let effective = effective_parallelism("openclaw", value);
+    assert_eq!(
+        effective, 3,
+        "explicit parallelism 3 (below cap) must be honored"
+    );
+}
+
+/// OpenClaw create with explicit parallelism above the cap: must be clamped.
+#[test]
+fn create_mint_openclaw_explicit_above_cap_is_clamped() {
+    let minted =
+        crate::managed_agents::resolve_mint_behavioral_defaults(None, vec![], Some(8), None)
+            .expect("resolve_mint_behavioral_defaults must succeed");
+    let value = minted.parallelism.unwrap_or(DEFAULT_AGENT_PARALLELISM);
+    let effective = effective_parallelism("openclaw", value);
+    assert_eq!(
+        effective,
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM,
+        "explicit parallelism 8 (above cap) must be clamped to {}",
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+    );
+}
+
+/// Create precedence: persona definition parallelism 8 wins over the default (10)
+/// but still gets capped at 5 for OpenClaw.
+#[test]
+fn create_mint_openclaw_definition_parallelism_above_cap_is_clamped() {
+    let mut definition = persona_record("def-openclaw", None, None);
+    definition.parallelism = Some(8);
+    definition.runtime = Some("openclaw".to_string());
+    let minted = crate::managed_agents::resolve_mint_behavioral_defaults(
+        None,
+        vec![],
+        None, // no explicit override — definition's 8 wins
+        Some(&definition),
+    )
+    .expect("resolve_mint_behavioral_defaults must succeed");
+    let value = minted.parallelism.unwrap_or(DEFAULT_AGENT_PARALLELISM);
+    let effective = effective_parallelism("openclaw", value);
+    assert_eq!(
+        effective,
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM,
+        "definition parallelism 8 above cap must be clamped to {} at mint",
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+    );
+}
+
+// ── Update + harness switch: normalize at the update boundary ─────────────────
+
+/// Atomic harness switch from goose to openclaw: normalize_instance_parallelism
+/// must clamp the stored parallelism to the OpenClaw cap.
+///
+/// This mirrors the code path in update_managed_agent (agent_models.rs:930-931)
+/// where record_agent_command + normalize_instance_parallelism run after the
+/// harness patch is applied.
+#[test]
+fn update_harness_switch_goose_to_openclaw_clamps_parallelism() {
+    use crate::managed_agents::normalize_instance_parallelism;
+
+    let record: crate::managed_agents::ManagedAgentRecord = serde_json::from_str(
+        r#"{
+            "pubkey": "switchtest01",
+            "name": "Switch Agent",
+            "private_key_nsec": "nsec1fake",
+            "relay_url": "wss://localhost:3000",
+            "acp_command": "buzz-acp",
+            "agent_command": "goose",
+            "agent_args": [],
+            "mcp_command": "",
+            "turn_timeout_seconds": 320,
+            "system_prompt": null,
+            "parallelism": 8,
+            "respond_to": "owner-only",
+            "respond_to_allowlist": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "last_started_at": null,
+            "last_stopped_at": null,
+            "last_exit_code": null,
+            "last_error": null
+        }"#,
+    )
+    .expect("switch agent record");
+
+    // Simulate the harness switch: agent_command is now "openclaw".
+    let mut record = record;
+    record.agent_command = "openclaw".to_string();
+
+    // normalize_instance_parallelism with the post-switch command.
+    normalize_instance_parallelism(&mut record, "openclaw");
+    assert_eq!(
+        record.parallelism,
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM,
+        "after switching to openclaw, parallelism 8 must be clamped to {}",
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM
+    );
+}
+
+/// Switching from openclaw to goose: stored parallelism must remain unchanged
+/// (goose has no cap — a value of 5 is kept as 5 without being raised).
+#[test]
+fn update_harness_switch_openclaw_to_goose_does_not_clamp() {
+    use crate::managed_agents::normalize_instance_parallelism;
+
+    let record: crate::managed_agents::ManagedAgentRecord = serde_json::from_str(
+        r#"{
+            "pubkey": "switchtest02",
+            "name": "Switch Agent",
+            "private_key_nsec": "nsec1fake",
+            "relay_url": "wss://localhost:3000",
+            "acp_command": "buzz-acp",
+            "agent_command": "openclaw",
+            "agent_args": [],
+            "mcp_command": "",
+            "turn_timeout_seconds": 320,
+            "system_prompt": null,
+            "parallelism": 5,
+            "respond_to": "owner-only",
+            "respond_to_allowlist": [],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "last_started_at": null,
+            "last_stopped_at": null,
+            "last_exit_code": null,
+            "last_error": null
+        }"#,
+    )
+    .expect("openclaw record");
+
+    let mut record = record;
+    // Simulate switching to goose with a higher parallelism.
+    record.agent_command = "goose".to_string();
+    record.parallelism = 10; // new value the user requested after switching to goose
+    normalize_instance_parallelism(&mut record, "goose");
+    assert_eq!(
+        record.parallelism, 10,
+        "goose has no cap — parallelism 10 must be stored as 10 after switch"
+    );
+}

@@ -765,3 +765,100 @@ fn spawn_hash_instance_args_win_over_definition_args() {
         "instance args and definition args must produce different hashes"
     );
 }
+
+// ── Parallelism cap in spawn hash ─────────────────────────────────────────────
+
+/// Two OpenClaw records with different parallelism values that BOTH clamp to
+/// the cap must hash identically — neither should badge a false restart.
+/// This is the definition-less variant (no persona to snapshot).
+#[test]
+fn hash_equivalence_openclaw_values_above_cap_are_equal() {
+    // Use agent_command_override to make record_agent_command resolve "openclaw"
+    // without a loaded custom-harness registry (production resolves it via the
+    // registry; in tests the override is the only hook that feeds the descriptor).
+    let mut r10 = record();
+    r10.agent_command_override = Some("openclaw".into());
+    r10.parallelism = 10;
+
+    let mut r8 = record();
+    r8.agent_command_override = Some("openclaw".into());
+    r8.parallelism = 8;
+
+    let h10 = spawn_config_hash(&r10, &[], &[], "ws://relay", &Default::default());
+    let h8 = spawn_config_hash(&r8, &[], &[], "ws://relay", &Default::default());
+
+    assert_eq!(
+        h10, h8,
+        "OpenClaw 10 and 8 must hash identically (both cap to 5)"
+    );
+}
+
+/// Values on opposite sides of the cap must hash differently.
+#[test]
+fn hash_inequality_openclaw_values_crossing_cap() {
+    let mut r5 = record();
+    r5.agent_command_override = Some("openclaw".into());
+    r5.parallelism = 5;
+
+    let mut r4 = record();
+    r4.agent_command_override = Some("openclaw".into());
+    r4.parallelism = 4;
+
+    let h5 = spawn_config_hash(&r5, &[], &[], "ws://relay", &Default::default());
+    let h4 = spawn_config_hash(&r4, &[], &[], "ws://relay", &Default::default());
+
+    assert_ne!(h5, h4, "OpenClaw 5 and 4 must hash differently");
+}
+
+/// Non-OpenClaw harnesses must hash raw parallelism unchanged.
+#[test]
+fn hash_uses_raw_parallelism_for_non_openclaw() {
+    let mut r10 = record();
+    r10.agent_command = "goose".into();
+    r10.parallelism = 10;
+
+    let mut r8 = record();
+    r8.agent_command = "goose".into();
+    r8.parallelism = 8;
+
+    let h10 = spawn_config_hash(&r10, &[], &[], "ws://relay", &Default::default());
+    let h8 = spawn_config_hash(&r8, &[], &[], "ws://relay", &Default::default());
+
+    assert_ne!(h10, h8, "non-OpenClaw 10 and 8 must hash differently");
+}
+
+/// Linked-persona OpenClaw record: parallelism above the cap hashes the same
+/// as another above-cap value (persona-snapshot normalization cooperates with
+/// the hash-site effective_parallelism call).
+#[test]
+fn hash_equivalence_openclaw_linked_persona_above_cap() {
+    let p = persona("p1", Some("openclaw"), "");
+
+    let mut r10 = record();
+    r10.persona_id = Some("p1".into());
+    r10.parallelism = 10;
+
+    let mut r8 = record();
+    r8.persona_id = Some("p1".into());
+    r8.parallelism = 8;
+
+    let h10 = spawn_config_hash(
+        &r10,
+        std::slice::from_ref(&p),
+        &[],
+        "ws://relay",
+        &Default::default(),
+    );
+    let h8 = spawn_config_hash(
+        &r8,
+        std::slice::from_ref(&p),
+        &[],
+        "ws://relay",
+        &Default::default(),
+    );
+
+    assert_eq!(
+        h10, h8,
+        "linked-persona OpenClaw 10 and 8 must hash identically"
+    );
+}

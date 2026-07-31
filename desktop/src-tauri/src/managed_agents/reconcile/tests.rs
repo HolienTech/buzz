@@ -400,3 +400,73 @@ fn retain_agent_record_is_noop_when_unchanged() {
         "no pending_sync churn for an unchanged record"
     );
 }
+
+// ── Boot-reconcile publishes effective parallelism ────────────────────────────
+
+/// Boot-reconcile of a legacy OpenClaw record with parallelism 10 must
+/// publish 5 in the kind:30177 content, not 10.
+#[test]
+fn boot_reconcile_openclaw_publishes_capped_parallelism() {
+    let dir = TempDir::new().unwrap();
+    let keys = nostr::Keys::generate();
+    let pubkey = "c".repeat(64);
+
+    let mut record = sample_record(&pubkey, "openclaw-agent");
+    record.runtime = Some("openclaw".to_string());
+    record.agent_command = "openclaw".to_string();
+    record.parallelism = 10; // above cap
+
+    write_store(&dir, &[record]);
+    assert_eq!(reconcile_agents_in_dir(dir.path(), &keys).unwrap(), 1);
+
+    let conn = open_retention_db(&dir.path().join("retention.db")).unwrap();
+    let row = get_retained_event(
+        &conn,
+        KIND_MANAGED_AGENT,
+        &keys.public_key().to_hex(),
+        &pubkey,
+    )
+    .unwrap()
+    .unwrap();
+
+    let content: serde_json::Value = serde_json::from_str(&row.content).unwrap();
+    assert_eq!(
+        content["parallelism"].as_u64().unwrap(),
+        crate::managed_agents::OPENCLAW_MAX_PARALLELISM as u64,
+        "boot-reconcile must publish capped parallelism for OpenClaw legacy record"
+    );
+}
+
+/// Non-OpenClaw record: boot-reconcile must publish the raw parallelism
+/// unchanged (99 in, 99 out under the Option 2 contract).
+#[test]
+fn boot_reconcile_non_openclaw_publishes_raw_parallelism() {
+    let dir = TempDir::new().unwrap();
+    let keys = nostr::Keys::generate();
+    let pubkey = "d".repeat(64);
+
+    let mut record = sample_record(&pubkey, "goose-agent");
+    record.runtime = Some("goose".to_string());
+    record.agent_command = "goose".to_string();
+    record.parallelism = 8;
+
+    write_store(&dir, &[record]);
+    reconcile_agents_in_dir(dir.path(), &keys).unwrap();
+
+    let conn = open_retention_db(&dir.path().join("retention.db")).unwrap();
+    let row = get_retained_event(
+        &conn,
+        KIND_MANAGED_AGENT,
+        &keys.public_key().to_hex(),
+        &pubkey,
+    )
+    .unwrap()
+    .unwrap();
+
+    let content: serde_json::Value = serde_json::from_str(&row.content).unwrap();
+    assert_eq!(
+        content["parallelism"].as_u64().unwrap(),
+        8,
+        "non-OpenClaw boot-reconcile must not cap parallelism"
+    );
+}
