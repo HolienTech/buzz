@@ -10701,6 +10701,8 @@ export function maybeInstallE2eTauriMocks() {
           memoryEntryCount: 0,
           hasSourceAllowlist: false,
           sourceAllowlistCount: 0,
+          blockers: [],
+          warnings: [],
         };
       }
       case "confirm_agent_snapshot_import": {
