@@ -258,6 +258,17 @@ export type AgentSnapshotImportPreview = {
   /** True when the snapshot's respond_to_allowlist is non-empty. */
   hasSourceAllowlist: boolean;
   sourceAllowlistCount: number;
+  /**
+   * Reasons the import cannot succeed. Non-empty means confirming would fail
+   * with the same message, so the UI disables Import rather than letting the
+   * user commit to a doomed action.
+   */
+  blockers: string[];
+  /**
+   * Problems that still import but leave the agent unable to start — chiefly a
+   * `runtime` no installed harness resolves.
+   */
+  warnings: string[];
 };
 
 /** Confirmation sent to `confirm_agent_snapshot_import`. */

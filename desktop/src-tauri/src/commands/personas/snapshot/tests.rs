@@ -571,6 +571,97 @@ fn import_preview_includes_exported_definition_metadata() {
     assert_eq!(preview.runtime.as_deref(), Some("goose"));
 }
 
+// ── Import preview: pre-confirm validation ───────────────────────────────────
+//
+// Both cases below are real failures observed in the field. Each used to pass
+// preview and fail later — one at confirm (invisibly, because the dialog only
+// rendered confirm errors in the result phase), one at spawn. The preview now
+// reports them before the user commits.
+
+/// A snapshot in `allowlist` mode carrying no pubkeys can never be imported:
+/// `confirm_agent_snapshot_import` rejects it on both Keep and Clear. The
+/// preview must say so up front so Import can be disabled.
+#[test]
+fn import_preview_blocks_allowlist_mode_with_empty_allowlist() {
+    let mut snapshot = make_snapshot(MemoryLevel::None, vec![]);
+    snapshot.definition.respond_to = Some("allowlist".to_string());
+    snapshot.definition.respond_to_allowlist = vec![];
+
+    let preview = build_agent_snapshot_import_preview(&snapshot);
+
+    assert!(
+        preview
+            .blockers
+            .iter()
+            .any(|b| b.contains("allowlist is empty")),
+        "allowlist mode with no pubkeys must be a blocker, got {:?}",
+        preview.blockers
+    );
+    // Confirm would fail identically — that is what makes it a blocker.
+    assert!(resolve_snapshot_import_behavior(
+        snapshot.definition.respond_to.as_deref(),
+        &snapshot.definition.respond_to_allowlist,
+        None,
+        false,
+    )
+    .is_err());
+}
+
+/// A harness *command* (`claude-agent-acp`) where a harness *id* (`claude`)
+/// belongs. The agent imports fine but cannot spawn, so this is a warning
+/// rather than a blocker — recoverable by picking a harness after import.
+#[test]
+fn import_preview_warns_on_unresolvable_harness_id() {
+    let mut snapshot = make_snapshot(MemoryLevel::None, vec![]);
+    snapshot.definition.runtime = Some("claude-agent-acp".to_string());
+
+    let preview = build_agent_snapshot_import_preview(&snapshot);
+
+    assert!(
+        preview.blockers.is_empty(),
+        "an unresolvable harness must not block import, got {:?}",
+        preview.blockers
+    );
+    assert!(
+        preview
+            .warnings
+            .iter()
+            .any(|w| w.contains("claude-agent-acp")),
+        "unresolvable harness id must warn, got {:?}",
+        preview.warnings
+    );
+}
+
+/// The healthy case: a real harness id and a coherent respond-to mode produce
+/// neither a blocker nor a warning, so Import stays enabled.
+#[test]
+fn import_preview_clean_snapshot_has_no_blockers_or_warnings() {
+    let mut snapshot = make_snapshot(MemoryLevel::None, vec![]);
+    snapshot.definition.runtime = Some("buzz-agent".to_string());
+    snapshot.definition.respond_to = Some("owner-only".to_string());
+    snapshot.definition.respond_to_allowlist = vec![];
+
+    let preview = build_agent_snapshot_import_preview(&snapshot);
+
+    assert!(preview.blockers.is_empty(), "{:?}", preview.blockers);
+    assert!(preview.warnings.is_empty(), "{:?}", preview.warnings);
+}
+
+/// An empty display name is rejected by confirm; preview must catch it too.
+#[test]
+fn import_preview_blocks_empty_display_name() {
+    let mut snapshot = make_snapshot(MemoryLevel::None, vec![]);
+    snapshot.profile.display_name = "   ".to_string();
+
+    let preview = build_agent_snapshot_import_preview(&snapshot);
+
+    assert!(
+        preview.blockers.iter().any(|b| b.contains("display name")),
+        "blank display name must be a blocker, got {:?}",
+        preview.blockers
+    );
+}
+
 // ── Import: resolve_snapshot_import_behavior — the production selection path
 //
 // All tests below call `resolve_snapshot_import_behavior` directly.  This is

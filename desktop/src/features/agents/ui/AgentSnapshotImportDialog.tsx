@@ -60,6 +60,12 @@ export function AgentSnapshotImportDialog({
   const phase: ImportPhase =
     result !== null ? "result" : isConfirming ? "confirming" : "preview";
 
+  // A snapshot the backend already knows it will reject: confirming would fail
+  // with the same message, so refuse before the click rather than after it.
+  const blockers = preview.blockers ?? [];
+  const warnings = preview.warnings ?? [];
+  const isBlocked = blockers.length > 0;
+
   const hasMemory = preview.memoryEntryCount > 0;
   const memoryLevelLabel =
     preview.memoryLevel === "core"
@@ -86,7 +92,7 @@ export function AgentSnapshotImportDialog({
                 <>
                   <Button
                     data-testid="agent-snapshot-import-confirm"
-                    disabled={isConfirming}
+                    disabled={isConfirming || isBlocked}
                     onClick={() => onConfirm(keepAllowlist)}
                     size="sm"
                     type="button"
@@ -120,13 +126,60 @@ export function AgentSnapshotImportDialog({
         <Separator />
 
         {phase === "preview" ? (
-          <PreviewBody
-            preview={preview}
-            hasMemory={hasMemory}
-            memoryLevelLabel={memoryLevelLabel}
-            keepAllowlist={keepAllowlist}
-            onKeepAllowlistChange={setKeepAllowlist}
-          />
+          <>
+            {/* A failed confirm leaves `result` null, so the dialog falls back
+                to the preview phase. Without this the error is never rendered
+                anywhere and Import looks like a no-op. */}
+            {confirmError ? (
+              <div
+                className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                data-testid="agent-snapshot-import-confirm-error"
+              >
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <p>{confirmError}</p>
+              </div>
+            ) : null}
+
+            {isBlocked ? (
+              <div
+                className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                data-testid="agent-snapshot-import-blockers"
+              >
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div className="flex flex-col gap-1">
+                  <p className="font-medium">
+                    This snapshot cannot be imported.
+                  </p>
+                  <ul className="space-y-0.5">
+                    {blockers.map((blocker) => (
+                      <li key={blocker}>{blocker}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ) : null}
+
+            {warnings.length > 0 ? (
+              <div
+                className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
+                data-testid="agent-snapshot-import-warnings"
+              >
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <ul className="space-y-0.5">
+                  {warnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <PreviewBody
+              preview={preview}
+              hasMemory={hasMemory}
+              memoryLevelLabel={memoryLevelLabel}
+              keepAllowlist={keepAllowlist}
+              onKeepAllowlistChange={setKeepAllowlist}
+            />
+          </>
         ) : phase === "confirming" ? (
           <div className="py-4 text-center text-sm text-muted-foreground">
             Creating agent…

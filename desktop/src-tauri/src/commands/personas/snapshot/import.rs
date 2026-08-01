@@ -72,6 +72,90 @@ pub struct AgentSnapshotImportPreview {
     pub has_source_allowlist: bool,
     /// Number of source allowlist entries.
     pub source_allowlist_count: usize,
+    /// Reasons this snapshot cannot be imported at all. When non-empty the UI
+    /// must disable Import: confirming would fail with the same message after
+    /// the user has already committed to the action.
+    ///
+    /// These checks duplicate the ones `confirm_agent_snapshot_import` performs
+    /// so the failure surfaces *before* the click rather than after it.
+    pub blockers: Vec<String>,
+    /// Problems that do not block the import but leave the new agent unable to
+    /// run — chiefly a `runtime` that no installed harness resolves. The agent
+    /// is created fine; spawning it refuses until a harness is picked.
+    pub warnings: Vec<String>,
+}
+
+/// True when a snapshot `runtime` string resolves to a real harness — either a
+/// static builtin or a loaded preset/custom definition.
+///
+/// The common failure is a snapshot carrying a harness *command* (such as
+/// `claude-agent-acp`) where an *id* (`claude`) belongs. Lookup is exact on id,
+/// so the command form dangles and spawn refuses with "harness ... was
+/// deleted". That is reported as a warning rather than a blocker: the loaded
+/// registry may legitimately be empty this early, and the condition is
+/// recoverable after import by picking a harness.
+fn harness_id_resolves(id: &str) -> bool {
+    crate::managed_agents::known_acp_runtime_exact(id).is_some()
+        || crate::managed_agents::custom_harnesses::lookup_loaded_harness_by_id(id).is_some()
+}
+
+/// Collect every reason `confirm_agent_snapshot_import` would reject this
+/// snapshot, so the preview can refuse up front instead of failing mid-write.
+fn collect_import_blockers(snapshot: &AgentSnapshot) -> Vec<String> {
+    let mut blockers = Vec::new();
+
+    if snapshot.profile.display_name.trim().is_empty() {
+        blockers.push("Snapshot display name is empty.".to_string());
+    }
+
+    // Behavioral resolution can reject on either Keep or Clear (for example a
+    // malformed pubkey in the allowlist). Import is impossible only when BOTH
+    // choices fail, so a message that appears for one choice alone is not a
+    // blocker — the user can still pick the other.
+    let keep_err = resolve_snapshot_import_behavior(
+        snapshot.definition.respond_to.as_deref(),
+        &snapshot.definition.respond_to_allowlist,
+        snapshot.definition.parallelism,
+        true,
+    )
+    .err();
+    let clear_err = resolve_snapshot_import_behavior(
+        snapshot.definition.respond_to.as_deref(),
+        &snapshot.definition.respond_to_allowlist,
+        snapshot.definition.parallelism,
+        false,
+    )
+    .err();
+    if let (Some(keep), Some(clear)) = (keep_err, clear_err) {
+        blockers.push(keep);
+        if clear != blockers[blockers.len() - 1] {
+            blockers.push(clear);
+        }
+    }
+
+    blockers
+}
+
+/// Non-blocking problems worth surfacing before the user commits.
+fn collect_import_warnings(snapshot: &AgentSnapshot) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if let Some(runtime) = snapshot
+        .definition
+        .runtime
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if !harness_id_resolves(runtime) {
+            warnings.push(format!(
+                "Harness \"{runtime}\" is not installed or is not a harness id — \
+                 the agent will import but cannot start until you pick a harness."
+            ));
+        }
+    }
+
+    warnings
 }
 
 /// The confirmation request sent from the UI after the user reviews the preview.
@@ -327,6 +411,8 @@ pub(crate) fn build_agent_snapshot_import_preview(
         memory_entry_count: snapshot.memory.entries.len(),
         source_allowlist_count: snapshot.definition.respond_to_allowlist.len(),
         has_source_allowlist: !snapshot.definition.respond_to_allowlist.is_empty(),
+        blockers: collect_import_blockers(snapshot),
+        warnings: collect_import_warnings(snapshot),
     }
 }
 
