@@ -43,11 +43,8 @@ const messageMetadataTextStyle = TextStyle(
   letterSpacing: 0,
 );
 
-/// Message timestamps share the secondary author metadata style.
-const messageTimestampTextStyle = messageMetadataTextStyle;
-
-/// Compact reply previews: 13.1sp regular on a 17sp line height.
-const replyPreviewTextStyle = TextStyle(
+/// Message timestamps: 13.1sp regular, one step below 15sp author names.
+const messageTimestampTextStyle = TextStyle(
   fontFamily: _fontFamily,
   fontSize: 13.1,
   fontWeight: FontWeight.w400,
@@ -76,6 +73,15 @@ const channelTitleTextStyle = TextStyle(
 /// Primary labels in compact content lists.
 const contentListTitleTextStyle = messageUsernameTextStyle;
 
+/// Titles shared by Home channel rows and Solo chat rows.
+const navigationChatTitleTextStyle = TextStyle(
+  fontFamily: _fontFamily,
+  fontSize: 17,
+  fontWeight: FontWeight.w400,
+  height: 22 / 17,
+  letterSpacing: 0,
+);
+
 /// Secondary copy in compact content lists.
 const contentListBodyTextStyle = TextStyle(
   fontFamily: _fontFamily,
@@ -85,38 +91,23 @@ const contentListBodyTextStyle = TextStyle(
   letterSpacing: 0,
 );
 
-/// Timestamps in compact content lists.
-const contentListTimestampTextStyle = messageMetadataTextStyle;
-
-/// Filter chip labels use the compact 15sp type ramp.
-const filterChipTextStyle = messageMetadataTextStyle;
+/// Filter chip labels use a tighter 15sp Inter treatment.
+const filterChipTextStyle = TextStyle(
+  fontFamily: _fontFamily,
+  fontSize: 15,
+  fontWeight: FontWeight.w400,
+  height: 1,
+  letterSpacing: 0,
+);
 
 /// Search fields use the primary 15sp body treatment.
 const searchInputTextStyle = messageBodyTextStyle;
 
-/// System message actor names: 15sp semibold on a 17sp line height.
-const systemMessageHeadingTextStyle = TextStyle(
-  fontFamily: _fontFamily,
-  fontSize: 15,
-  fontWeight: FontWeight.w600,
-  height: 17 / 15,
-  letterSpacing: 0,
-);
-
-/// System message copy: 15sp regular on a 20sp line height.
-const systemMessageBodyTextStyle = TextStyle(
-  fontFamily: _fontFamily,
-  fontSize: 15,
-  fontWeight: FontWeight.w400,
-  height: 20 / 15,
-  letterSpacing: 0,
-);
-
 /// Activity sender names share the primary author style.
 const activityUsernameTextStyle = messageUsernameTextStyle;
 
-/// Activity timestamps share the secondary author metadata style.
-const activityTimestampTextStyle = messageMetadataTextStyle;
+/// Activity timestamps share the compact message timestamp treatment.
+const activityTimestampTextStyle = messageTimestampTextStyle;
 
 /// Activity context labels: 13.1sp medium on a 17sp line height.
 const activityContextTextStyle = TextStyle(
@@ -129,3 +120,11 @@ const activityContextTextStyle = TextStyle(
 
 /// Activity message previews use the primary message copy style.
 const activityPreviewTextStyle = messageBodyTextStyle;
+
+/// Inventory labels shared by Solo and Team navigation sections.
+const navigationSectionTextStyle = TextStyle(
+  fontFamily: _fontFamily,
+  fontSize: 15,
+  height: 20 / 15,
+  fontWeight: FontWeight.w500,
+);
